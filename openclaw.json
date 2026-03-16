@@ -1,0 +1,26 @@
+{
+  "gateway": {
+    "auth": {
+      "token": "dzeck-openclaw-gateway-2024"
+    }
+  },
+  "models": {
+    "default": "cloudflare-workers-ai/@cf/meta/llama-3-8b-instruct",
+    "providers": {
+      "cloudflare-workers-ai": {
+        "baseUrl": "https://gateway.ai.cloudflare.com/v1/6c807fe58ad83714e772403cd528dbeb/dzeck/workers-ai/v1",
+        "api": "openai-chat",
+        "apiKey": "khqbL_jHGaAahPYTFIzwK6TuXvaM32mVvxt2pVGp",
+        "models": [
+          {
+            "id": "@cf/meta/llama-3-8b-instruct",
+            "name": "Llama 3 8B Instruct (Cloudflare Workers AI)",
+            "input": ["text"],
+            "contextWindow": 8192,
+            "maxTokens": 2048
+          }
+        ]
+      }
+    }
+  }
+}
