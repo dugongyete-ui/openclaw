@@ -4,9 +4,31 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { spawn } from "child_process";
 import path from "path";
+import net from "net";
 
 const app = express();
 const httpServer = createServer(app);
+
+// Forward WebSocket upgrades (except Vite HMR) to the gateway on port 8080
+httpServer.on("upgrade", (req, socket, head) => {
+  const url = req.url ?? "/";
+  if (url.startsWith("/vite-hmr") || url.startsWith("/@vite")) return;
+
+  const gatewayConn = net.connect(8080, "127.0.0.1", () => {
+    const headers = Object.entries(req.headers)
+      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+      .join("\r\n");
+    gatewayConn.write(`GET ${url} HTTP/${req.httpVersion}\r\n${headers}\r\n\r\n`);
+    if (head && head.length > 0) gatewayConn.write(head);
+    gatewayConn.pipe(socket);
+    socket.pipe(gatewayConn);
+  });
+  gatewayConn.on("error", (err) => {
+    console.error("[ws-proxy]", err.message);
+    socket.destroy();
+  });
+  socket.on("error", () => gatewayConn.destroy());
+});
 
 declare module "http" {
   interface IncomingMessage {

@@ -48,6 +48,20 @@ export async function setupVite(server: Server, app: Express) {
         `src="/src/main.ts"`,
         `src="/src/main.ts?v=${nanoid()}"`,
       );
+      // Inject auto-config script: set gateway URL and token so the UI connects automatically
+      const autoConfig = `<script>
+(function(){try{
+  var proto=location.protocol==='https:'?'wss':'ws';
+  var gw=proto+'://'+location.host+'/';
+  var sk='openclaw.control.settings.v1';
+  var s=JSON.parse(localStorage.getItem(sk)||'{}');
+  if(!s.gatewayUrl){s.gatewayUrl=gw;localStorage.setItem(sk,JSON.stringify(s));}
+  var scope=(function(u){try{var p=new URL(u);var pp=p.pathname==='/'?'':p.pathname.replace(/\\/+$/,'')||p.pathname;return p.protocol+'//'+p.host+pp;}catch(e){return u;}})(s.gatewayUrl||gw);
+  var tk='openclaw.control.token.v1:'+scope;
+  if(!sessionStorage.getItem(tk)){sessionStorage.setItem(tk,'dzeck-openclaw-gateway-2024');}
+}catch(e){}})();
+</script>`;
+      template = template.replace("</head>", autoConfig + "</head>");
       const page = await vite.transformIndexHtml(url, template);
       res.status(200).set({ "Content-Type": "text/html" }).end(page);
     } catch (e) {
