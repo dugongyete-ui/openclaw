@@ -39,6 +39,14 @@ export default defineConfig(() => {
       port: 5000,
       strictPort: true,
       allowedHosts: true,
+      proxy: {
+        "/ws": {
+          target: "ws://localhost:8080",
+          ws: true,
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/ws/, ""),
+        },
+      },
     },
     plugins: [
       {

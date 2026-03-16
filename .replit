@@ -17,6 +17,10 @@ author = "agent"
 task = "workflow.run"
 args = "Start application"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Gateway Server"
+
 [[workflows.workflow]]
 name = "Start application"
 author = "agent"
@@ -29,9 +33,25 @@ task = "shell.exec"
 args = "cd ui && node node_modules/.bin/vite"
 waitForPort = 5000
 
+[[workflows.workflow]]
+name = "Gateway Server"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "node gateway-server.js"
+waitForPort = 8080
+
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 8080
+externalPort = 8080
 
 [deployment]
 deploymentTarget = "static"
