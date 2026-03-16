@@ -2,6 +2,8 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { spawn } from "child_process";
+import path from "path";
 
 const app = express();
 const httpServer = createServer(app);
@@ -60,6 +62,25 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Start the gateway server as a child process
+  const gatewayPath = path.resolve(import.meta.dirname, "..", "gateway-server.js");
+  const gateway = spawn("node", [gatewayPath], {
+    stdio: "inherit",
+    env: { ...process.env },
+  });
+  gateway.on("error", (err) => console.error("[gateway] Failed to start:", err));
+  gateway.on("exit", (code) => console.log(`[gateway] Exited with code ${code}`));
+
+  // OpenClaw control-ui config endpoint
+  app.get("/__openclaw/control-ui-config.json", (_req, res) => {
+    res.json({
+      basePath: "/",
+      assistantName: "",
+      assistantAvatar: "",
+      assistantAgentId: "",
+    });
+  });
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {

@@ -36,16 +36,18 @@ Model: `@cf/meta/llama-3-8b-instruct` via `https://gateway.ai.cloudflare.com/v1/
 
 ### Running on Replit
 
-Two workflows must both be running:
+One workflow handles everything:
 
-1. **Gateway Server** — `node gateway-server.js` (port 8080)
-   - OpenClaw-compatible WebSocket server
-   - Implements the full client↔server protocol
-   - Forwards chat messages to Cloudflare Workers AI with streaming
+**Start application** (`npm run dev`, port 5000) — runs `tsx server/index.ts` which:
+1. Spawns `gateway-server.js` as a child process (WebSocket gateway on port 8080)
+2. Serves the OpenClaw control UI via Vite dev server (from `ui/` directory)
+3. Exposes `/__openclaw/control-ui-config.json` config endpoint
+4. Proxies `/ws` WebSocket connections to the gateway on port 8080
 
-2. **Start application** — `cd ui && node node_modules/.bin/vite` (port 5000)
-   - Vite dev server for the web control UI
-   - Proxies `/ws` to `ws://localhost:8080` (the gateway)
+Key files changed from default template:
+- `vite.config.ts` — points to `ui/` directory, adds `/ws` proxy to port 8080
+- `server/vite.ts` — serves `ui/index.html` instead of `client/index.html`
+- `server/index.ts` — spawns gateway server + adds control-ui-config endpoint
 
 ### Connecting the UI
 
