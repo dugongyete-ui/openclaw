@@ -1,146 +1,26 @@
-import express, { type Request, Response, NextFunction } from "express";
-import { registerRoutes } from "./routes";
-import { serveStatic } from "./static";
-import { createServer } from "http";
 import { spawn } from "child_process";
 import path from "path";
-import net from "net";
 
-const app = express();
-const httpServer = createServer(app);
+const root = path.resolve(import.meta.dirname, "..");
 
-// Forward WebSocket upgrades (except Vite HMR) to the gateway on port 8080
-httpServer.on("upgrade", (req, socket, head) => {
-  const url = req.url ?? "/";
-  if (url.startsWith("/vite-hmr") || url.startsWith("/@vite")) return;
-
-  const gatewayConn = net.connect(8080, "127.0.0.1", () => {
-    const headers = Object.entries(req.headers)
-      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
-      .join("\r\n");
-    gatewayConn.write(`GET ${url} HTTP/${req.httpVersion}\r\n${headers}\r\n\r\n`);
-    if (head && head.length > 0) gatewayConn.write(head);
-    gatewayConn.pipe(socket);
-    socket.pipe(gatewayConn);
-  });
-  gatewayConn.on("error", (err) => {
-    console.error("[ws-proxy]", err.message);
-    socket.destroy();
-  });
-  socket.on("error", () => gatewayConn.destroy());
-});
-
-declare module "http" {
-  interface IncomingMessage {
-    rawBody: unknown;
-  }
-}
-
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
-    },
-  }),
-);
-
-app.use(express.urlencoded({ extended: false }));
-
-export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
-
-  console.log(`${formattedTime} [${source}] ${message}`);
-}
-
-app.use((req, res, next) => {
-  const start = Date.now();
-  const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
-
-  res.on("finish", () => {
-    const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      log(logLine);
-    }
-  });
-
-  next();
-});
-
-(async () => {
-  // Start the gateway server as a child process
-  const gatewayPath = path.resolve(import.meta.dirname, "..", "gateway-server.js");
-  const gateway = spawn("node", [gatewayPath], {
+function spawnProc(label: string, cmd: string, args: string[], cwd: string) {
+  const proc = spawn(cmd, args, {
+    cwd,
     stdio: "inherit",
     env: { ...process.env },
   });
-  gateway.on("error", (err) => console.error("[gateway] Failed to start:", err));
-  gateway.on("exit", (code) => console.log(`[gateway] Exited with code ${code}`));
+  proc.on("error", (err) => console.error(`[${label}] Failed to start:`, err.message));
+  proc.on("exit", (code) => console.log(`[${label}] Exited with code ${code}`));
+  return proc;
+}
 
-  // OpenClaw control-ui config endpoint
-  app.get("/__openclaw/control-ui-config.json", (_req, res) => {
-    res.json({
-      basePath: "/",
-      assistantName: "",
-      assistantAvatar: "",
-      assistantAgentId: "",
-    });
-  });
+// 1. Start the gateway WebSocket server (port 8080)
+spawnProc("gateway", "node", [path.join(root, "gateway-server.js")], root);
 
-  await registerRoutes(httpServer, app);
+// 2. Start the OpenClaw control UI via Vite (port 5000)
+//    Uses ui/vite.config.ts which has correct optimizeDeps, proxy (/ws→8080), and stubs
+spawnProc("ui", "node", ["node_modules/.bin/vite", "--host", "0.0.0.0"], path.join(root, "ui"));
 
-  app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
-
-    console.error("Internal Server Error:", err);
-
-    if (res.headersSent) {
-      return next(err);
-    }
-
-    return res.status(status).json({ message });
-  });
-
-  // importantly only setup vite in development and after
-  // setting up all the other routes so the catch-all route
-  // doesn't interfere with the other routes
-  if (process.env.NODE_ENV === "production") {
-    serveStatic(app);
-  } else {
-    const { setupVite } = await import("./vite");
-    await setupVite(httpServer, app);
-  }
-
-  // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
-  const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`serving on port ${port}`);
-    },
-  );
-})();
+// Keep the process alive and forward signals to children
+process.on("SIGTERM", () => process.exit(0));
+process.on("SIGINT", () => process.exit(0));

@@ -8,6 +8,18 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <script>
+(function(){try{
+  var proto=location.protocol==='https:'?'wss':'ws';
+  var gw=proto+'://'+location.host+'/ws';
+  var sk='openclaw.control.settings.v1';
+  var s=JSON.parse(localStorage.getItem(sk)||'{}');
+  if(!s.gatewayUrl){s.gatewayUrl=gw;localStorage.setItem(sk,JSON.stringify(s));}
+  var scope=(function(u){try{var p=new URL(u);var pp=p.pathname==='/'?'':p.pathname.replace(/\/+$/,'')||p.pathname;return p.protocol+'//'+p.host+pp;}catch(e){return u;}})(s.gatewayUrl||gw);
+  var tk='openclaw.control.token.v1:'+scope;
+  if(!sessionStorage.getItem(tk)){sessionStorage.setItem(tk,'dzeck-openclaw-gateway-2024');}
+}catch(e){}})();
+    </script>
   </head>
   <body>
     <openclaw-app></openclaw-app>
