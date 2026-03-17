@@ -18,12 +18,16 @@ function normalizeBase(input: string): string {
   return `${trimmed}/`;
 }
 
-export default defineConfig(() => {
+export default defineConfig(({ command }) => {
   const envBase = process.env.OPENCLAW_CONTROL_UI_BASE_PATH?.trim();
-  const base = envBase ? normalizeBase(envBase) : "./";
+  const base = envBase ? normalizeBase(envBase) : command === "serve" ? "/" : "./";
   return {
     base,
     publicDir: path.resolve(here, "public"),
+    esbuild: {
+      target: "es2022",
+      supported: { decorators: false },
+    },
     optimizeDeps: {
       include: ["lit/directives/repeat.js"],
     },
