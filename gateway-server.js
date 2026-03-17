@@ -39,7 +39,9 @@ const CF_GATEWAY_ID  = env.CLOUDFLARE_GATEWAY_ID || "dzeck";
 const PORT           = Number(env.OPENCLAW_GATEWAY_PORT || 8080);
 
 const CF_BASE_URL = `https://gateway.ai.cloudflare.com/v1/${CF_ACCOUNT_ID}/${CF_GATEWAY_ID}/workers-ai/v1`;
-const CF_MODEL    = "@cf/meta/llama-3-8b-instruct";
+const CF_MODEL    = "@cf/meta/llama-3.1-8b-instruct";
+
+const SYSTEM_PROMPT = { role: "system", content: "You are OpenClaw, a helpful AI assistant. Be concise and direct." };
 
 console.log(`[gateway] Token   : ${GATEWAY_TOKEN}`);
 console.log(`[gateway] CF URL  : ${CF_BASE_URL}`);
@@ -53,6 +55,7 @@ async function callCloudflare(messages) {
     messages,
     stream: true,
     max_tokens: 2048,
+    temperature: 0.7,
   });
 
   const res = await fetch(url, {
@@ -73,10 +76,18 @@ async function callCloudflare(messages) {
 
 // ─── Session Store (in-memory) ──────────────────────────────────────────────
 const sessions = new Map();
+let totalMessages = 0;
 
 function getOrCreateSession(key) {
   if (!sessions.has(key)) {
-    sessions.set(key, { key, name: "Chat", messages: [] });
+    sessions.set(key, {
+      key,
+      name: "Chat",
+      messages: [],
+      inputTokens: 0,
+      outputTokens: 0,
+      lastActive: Date.now(),
+    });
   }
   return sessions.get(key);
 }
@@ -112,12 +123,18 @@ async function handleChatSend(ws, params, id) {
   // Update session history
   const session = getOrCreateSession(sessionKey);
   session.messages.push({ role: "user", content: userMsg, timestamp: Date.now() });
+  session.lastActive = Date.now();
+  session.inputTokens += Math.ceil(userMsg.length / 4);
+  totalMessages += 1;
 
-  // Build messages for AI (last 20 for context)
-  const history = session.messages.slice(-20).map((m) => ({
-    role: m.role === "assistant" ? "assistant" : "user",
-    content: typeof m.content === "string" ? m.content : String(m.content ?? ""),
-  }));
+  // Build messages for AI (system prompt + last 10 for context)
+  const history = [
+    SYSTEM_PROMPT,
+    ...session.messages.slice(-10).map((m) => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: typeof m.content === "string" ? m.content : String(m.content ?? ""),
+    })),
+  ];
 
   let seq = 0;
   let assistantText = "";
@@ -169,6 +186,8 @@ async function handleChatSend(ws, params, id) {
 
   // Save assistant response to history
   session.messages.push({ role: "assistant", content: assistantText, timestamp: Date.now() });
+  session.outputTokens += Math.ceil(assistantText.length / 4);
+  totalMessages += 1;
 
   // Send lifecycle end event
   sendEvent(ws, "agent", {
@@ -216,16 +235,29 @@ wss.on("connection", (ws, req) => {
         return;
       }
       authenticated = true;
+      const sessionList = Array.from(sessions.values()).map((s) => ({
+        key: s.key,
+        name: s.name,
+        messageCount: s.messages.length,
+        lastActive: s.lastActive,
+      }));
+      if (sessionList.length === 0) {
+        sessionList.push({ key: "default", name: "Chat", messageCount: 0, lastActive: Date.now() });
+      }
       respondOk(ws, id, {
         type: "hello-ok",
         protocol: 1,
         server: { version: "2026.3.14", connId: crypto.randomUUID() },
         features: {
-          methods: ["chat.send", "chat.history", "models.list", "sessions.list", "health"],
+          methods: [
+            "chat.send", "chat.history", "models.list", "sessions.list", "health",
+            "nodes.list", "instances.list", "skills.list", "cron.list",
+            "agents.list", "channels.list", "overview.get", "usage.status", "usage.cost",
+          ],
           events: ["agent"],
         },
         snapshot: {
-          sessions: [{ key: "default", name: "Chat" }],
+          sessions: sessionList,
           channels: [],
         },
       });
@@ -247,9 +279,17 @@ wss.on("connection", (ws, req) => {
 
     // ── sessions.list ────────────────────────────────────────────────────────
     if (method === "sessions.list" || method === "sessions.get") {
-      respondOk(ws, id, {
-        sessions: [{ key: "default", name: "Chat", agentId: null }],
-      });
+      const sessionList = Array.from(sessions.values()).map((s) => ({
+        key: s.key,
+        name: s.name,
+        messageCount: s.messages.length,
+        lastActive: s.lastActive,
+        agentId: null,
+      }));
+      if (sessionList.length === 0) {
+        sessionList.push({ key: "default", name: "Chat", messageCount: 0, lastActive: Date.now(), agentId: null });
+      }
+      respondOk(ws, id, { sessions: sessionList });
       return;
     }
 
@@ -273,7 +313,7 @@ wss.on("connection", (ws, req) => {
         models: [
           {
             id: `cloudflare-workers-ai/${CF_MODEL}`,
-            name: "Llama 3 8B (Cloudflare Workers AI)",
+            name: "Llama 3.1 8B Instruct",
             provider: "cloudflare-workers-ai",
             model: CF_MODEL,
             input: ["text"],
@@ -298,21 +338,86 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
-    // ── channels.status ──────────────────────────────────────────────────────
-    if (method === "channels.status") {
+    // ── channels.status / channels.list ──────────────────────────────────────
+    if (method === "channels.status" || method === "channels.list") {
       respondOk(ws, id, { channels: [] });
       return;
     }
 
     // ── agents.list ──────────────────────────────────────────────────────────
     if (method === "agents.list") {
-      respondOk(ws, id, { agents: [{ id: "default", name: "Assistant" }] });
+      respondOk(ws, id, {
+        agents: [
+          {
+            id: "default",
+            name: "Assistant",
+            description: "OpenClaw AI assistant powered by Cloudflare Workers AI",
+            model: CF_MODEL,
+            provider: "cloudflare-workers-ai",
+            status: "active",
+            capabilities: ["chat"],
+          },
+        ],
+      });
+      return;
+    }
+
+    // ── nodes.list ───────────────────────────────────────────────────────────
+    if (method === "nodes.list") {
+      respondOk(ws, id, {
+        nodes: [
+          { id: "local", name: "This Device", status: "online", platform: "web" },
+        ],
+      });
+      return;
+    }
+
+    // ── instances.list ───────────────────────────────────────────────────────
+    if (method === "instances.list") {
+      respondOk(ws, id, {
+        instances: [
+          { id: "default", name: "OpenClaw Instance", status: "running" },
+        ],
+      });
+      return;
+    }
+
+    // ── skills.list ──────────────────────────────────────────────────────────
+    if (method === "skills.list") {
+      respondOk(ws, id, { skills: [] });
+      return;
+    }
+
+    // ── cron.list ────────────────────────────────────────────────────────────
+    if (method === "cron.list") {
+      respondOk(ws, id, { jobs: [] });
+      return;
+    }
+
+    // ── overview.get / stats.get ─────────────────────────────────────────────
+    if (method === "overview.get" || method === "stats.get") {
+      respondOk(ws, id, {
+        sessions: sessions.size,
+        messages: totalMessages,
+        uptime: process.uptime(),
+      });
       return;
     }
 
     // ── config.get ───────────────────────────────────────────────────────────
     if (method === "config.get") {
-      respondOk(ws, id, { raw: "{}", baseHash: "" });
+      respondOk(ws, id, {
+        raw: JSON.stringify({
+          ai: {
+            model: CF_MODEL,
+            provider: "cloudflare-workers-ai",
+            contextWindow: 8192,
+            maxTokens: 2048,
+            temperature: 0.7,
+          },
+        }),
+        baseHash: "",
+      });
       return;
     }
 
@@ -322,14 +427,36 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
-    // ── usage.status ─────────────────────────────────────────────────────────
+    // ── usage.status / usage.cost ────────────────────────────────────────────
     if (method === "usage.status" || method === "usage.cost") {
-      respondOk(ws, id, { usage: null, cost: null });
+      const allSessions = Array.from(sessions.values());
+      const totalInput = allSessions.reduce((sum, s) => sum + (s.inputTokens || 0), 0);
+      const totalOutput = allSessions.reduce((sum, s) => sum + (s.outputTokens || 0), 0);
+      const sessionUsage = allSessions.map((s) => ({
+        key: s.key,
+        name: s.name,
+        inputTokens: s.inputTokens || 0,
+        outputTokens: s.outputTokens || 0,
+        totalMessages: s.messages.length,
+      }));
+      respondOk(ws, id, {
+        usage: {
+          inputTokens: totalInput,
+          outputTokens: totalOutput,
+          totalTokens: totalInput + totalOutput,
+          totalMessages,
+          sessions: sessionUsage,
+        },
+        cost: {
+          estimated: ((totalInput + totalOutput) * 0.0000002).toFixed(6),
+          currency: "USD",
+        },
+      });
       return;
     }
 
-    // ── Catch-all: return empty success ──────────────────────────────────────
-    console.log(`[gateway] Unhandled method: ${method}`);
+    // ── Catch-all: log and return empty success ───────────────────────────────
+    console.log(`[gateway] Unhandled method: ${method}`, JSON.stringify(params));
     respondOk(ws, id, {});
   });
 
